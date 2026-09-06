@@ -54,6 +54,7 @@ flowchart TD
 | Layer | Technology | Rationale & Trade-offs |
 | :--- | :--- | :--- |
 | **Language** | C (C99) | Chosen for direct, low-level access to POSIX system calls (`lstat`, `link`). Trade-off: Requires manual memory management and bounds checking (e.g., preventing `snprintf` overflows). |
+| **Architecture** | Modular Clean Code | Divided into `main.c` (CLI/parsing) and `backup.c/h` (core logic) with a context struct (`BackupContext`). Rationale: Removes global variables, isolates responsibilities, and makes the code highly testable and readable. |
 | **File I/O** | POSIX Syscalls | `opendir`/`readdir`/`link` provide raw performance over standard library wrappers. Trade-off: Code is not portable to non-POSIX systems like native Windows. |
 | **Storage Strategy**| Hard Links | Saves 100% of disk space for unmodified files. Trade-off: Hard links cannot span across different disk partitions or filesystems; modifying the backup file modifies the source. |
 
