@@ -98,13 +98,27 @@ void copy_directory(const char *src, const char *dst) {
         }
     }
 
+    char *src_path = malloc(PATH_MAX);
+    char *dst_path = malloc(PATH_MAX);
+    if (!src_path || !dst_path) {
+        fprintf(stderr, "Error allocating memory\n");
+        free(src_path);
+        free(dst_path);
+        closedir(dir);
+        return;
+    }
+
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
 
-        char src_path[PATH_MAX], dst_path[PATH_MAX];
-        snprintf(src_path, sizeof(src_path), "%s/%s", src, entry->d_name);
-        snprintf(dst_path, sizeof(dst_path), "%s/%s", dst, entry->d_name);
+        int src_len = snprintf(src_path, PATH_MAX, "%s/%s", src, entry->d_name);
+        int dst_len = snprintf(dst_path, PATH_MAX, "%s/%s", dst, entry->d_name);
+
+        if (src_len >= PATH_MAX || dst_len >= PATH_MAX || src_len < 0 || dst_len < 0) {
+            fprintf(stderr, "Error: path too long for %s\n", entry->d_name);
+            continue;
+        }
 
         struct stat st;
         if (lstat(src_path, &st) == -1) {
@@ -128,6 +142,8 @@ void copy_directory(const char *src, const char *dst) {
         }
     }
 
+    free(src_path);
+    free(dst_path);
     closedir(dir);
 }
 
