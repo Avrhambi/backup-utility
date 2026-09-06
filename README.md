@@ -40,6 +40,23 @@ flowchart TD
     ReadDir -- EOF --> End([End Backup])
 ```
 
+### End-to-End Walkthrough
+
+1. **CLI Parsing**: The user invokes `./backup -v /src /dst`. `getopt` parses flags.
+2. **Validation**: The tool checks if `/src` exists and if the user has read/execute permissions.
+3. **Directory Creation**: `/dst` is created (if missing) and permissions are cloned from `/src`.
+4. **Traversal**: `opendir` reads the contents of `/src` recursively.
+5. **Hard Linking**: For every regular file found, `link(src_file, dst_file)` is called, creating a zero-storage pointer to the original inode.
+6. **Logging**: If `-v` is active, the operation is printed. Upon completion, a summary is appended to `backup.log`.
+
+## Tech Stack & Engineering Decisions
+
+| Layer | Technology | Rationale & Trade-offs |
+| :--- | :--- | :--- |
+| **Language** | C (C99) | Chosen for direct, low-level access to POSIX system calls (`lstat`, `link`). Trade-off: Requires manual memory management and bounds checking (e.g., preventing `snprintf` overflows). |
+| **File I/O** | POSIX Syscalls | `opendir`/`readdir`/`link` provide raw performance over standard library wrappers. Trade-off: Code is not portable to non-POSIX systems like native Windows. |
+| **Storage Strategy**| Hard Links | Saves 100% of disk space for unmodified files. Trade-off: Hard links cannot span across different disk partitions or filesystems; modifying the backup file modifies the source. |
+
 ## How to Use
 
 Compile the program using the provided `Makefile`:
