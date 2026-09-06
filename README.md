@@ -20,24 +20,24 @@ The core logic relies on a recursive directory traversal loop, checking file typ
 
 ```mermaid
 flowchart TD
-    Start([Start Backup]) --> ReadDir[Read Directory Entry]
-    ReadDir --> Lstat{File Type?}
+    Start(["Start Backup"]) --> ReadDir["Read Directory Entry"]
+    ReadDir --> Lstat{"File Type?"}
     
-    Lstat -- Directory --> Mkdir[Create Dest Dir & Copy Perms]
-    Mkdir --> Recurse[Recursive Call]
+    Lstat -- Directory --> Mkdir["Create Dest Dir & Copy Perms"]
+    Mkdir --> Recurse["Recursive Call"]
     Recurse --> ReadDir
     
-    Lstat -- Regular File --> Link[Create Hard Link (link)]
+    Lstat -- Regular File --> Link["Create Hard Link (link)"]
     Link --> ReadDir
     
-    Lstat -- Symlink --> Readlink[Read Symlink Target]
-    Readlink --> Symlink[Create New Symlink (symlink)]
+    Lstat -- Symlink --> Readlink["Read Symlink Target"]
+    Readlink --> Symlink["Create New Symlink (symlink)"]
     Symlink --> ReadDir
     
-    Lstat -- Other --> Skip[Skip / Log Ignore]
+    Lstat -- Other --> Skip["Skip / Log Ignore"]
     Skip --> ReadDir
     
-    ReadDir -- EOF --> End([End Backup])
+    ReadDir -- EOF --> End(["End Backup"])
 ```
 
 ### End-to-End Walkthrough
