@@ -10,6 +10,7 @@
 #include <libgen.h>
 #include <limits.h>
 #include <getopt.h>
+#include <time.h>
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -17,6 +18,9 @@
 
 int opt_verbose = 0;
 int opt_dry_run = 0;
+
+unsigned long log_files_linked = 0;
+unsigned long long log_space_saved = 0;
 
 void print_help(const char *prog_name) {
     printf("Usage: %s [OPTIONS] <source_dir> <backup_dir>\n", prog_name);
@@ -26,15 +30,18 @@ void print_help(const char *prog_name) {
     printf("  -d, --dry-run   Simulate the backup without writing files\n");
 }
 
-void create_hard_link(const char *src, const char *dst) {
+void create_hard_link(const char *src, const char *dst, off_t size) {
     if (opt_verbose) {
         printf("[LINK] %s -> %s\n", src, dst);
     }
     if (!opt_dry_run) {
         if (link(src, dst) == -1) {
             fprintf(stderr, "Error linking %s to %s: %s\n", src, dst, strerror(errno));
+            return;
         }
     }
+    log_files_linked++;
+    log_space_saved += size;
 }
 
 void copy_symlink(const char *src, const char *dst) {
@@ -109,7 +116,7 @@ void copy_directory(const char *src, const char *dst) {
             if (access(src_path, R_OK) == -1) {
                 fprintf(stderr, "Warning: missing read permissions for file %s\n", src_path);
             }
-            create_hard_link(src_path, dst_path);
+            create_hard_link(src_path, dst_path, st.st_size);
         } else if (S_ISLNK(st.st_mode)) {
             copy_symlink(src_path, dst_path);
         } else if (S_ISDIR(st.st_mode)) {
@@ -168,6 +175,25 @@ int main(int argc, char *argv[]) {
     }
 
     copy_directory(src_dir, dst_dir);
+
+    if (!opt_dry_run) {
+        char log_path[PATH_MAX];
+        snprintf(log_path, sizeof(log_path), "%s/backup.log", dst_dir);
+        FILE *log_file = fopen(log_path, "w");
+        if (log_file) {
+            time_t now = time(NULL);
+            fprintf(log_file, "Backup Time: %s", ctime(&now));
+            fprintf(log_file, "Files Linked: %lu\n", log_files_linked);
+            fprintf(log_file, "Total Space Saved: %llu bytes\n", log_space_saved);
+            fclose(log_file);
+        } else {
+            fprintf(stderr, "Error creating log file %s: %s\n", log_path, strerror(errno));
+        }
+    } else {
+        printf("\n[DRY RUN SUMMARY]\n");
+        printf("Files Linked: %lu\n", log_files_linked);
+        printf("Total Space Saved: %llu bytes\n", log_space_saved);
+    }
 
     return 0;
 }
