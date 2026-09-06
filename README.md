@@ -134,26 +134,3 @@ make clean
 ```
 
 ---
-
-## 6. Testing & CI/CD
-
-> **Gap — no automated tests or CI yet.** The build is `make` with
-> `-Wall -Wextra` (no warnings) and manual dry-run verification against the tree
-> above. There is no unit-test target and no `.github/workflows/`.
->
-> Planned: a shell-based fixture test (build a known tree, run the tool, assert
-> inode equality for files, target equality for symlinks, mode equality via
-> `stat -c %a`, and the `backup.log` counts) wired into a GitHub Actions job that
-> runs `make` + the fixture script on every push.
-
----
-
-## 7. Performance
-
-> **Gap — no benchmark evidence.** The hard-link strategy is O(number of entries)
-> syscalls with no byte copying, so it is expected to dominate `cp -r` on large
-> unchanged trees, but this has not been measured against `cp` or `rsync`.
->
-> To produce real figures: generate a fixed corpus (e.g. `N` files totalling
-> `X` GiB), then `time ./backup ...` vs. `time cp -r ...` vs. `time rsync -a ...`
-> on the same corpus and record wall time + `du -sh` of each destination.
