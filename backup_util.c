@@ -32,7 +32,7 @@ void create_hard_link(const char *src, const char *dst) {
     }
     if (!opt_dry_run) {
         if (link(src, dst) == -1) {
-            perror("link");
+            fprintf(stderr, "Error linking %s to %s: %s\n", src, dst, strerror(errno));
         }
     }
 }
@@ -41,7 +41,7 @@ void copy_symlink(const char *src, const char *dst) {
     char target[PATH_MAX];
     ssize_t len = readlink(src, target, sizeof(target) - 1);
     if (len == -1) {
-        perror("readlink");
+        fprintf(stderr, "Error reading symlink %s: %s\n", src, strerror(errno));
         return;
     }
     target[len] = '\0';
@@ -50,7 +50,7 @@ void copy_symlink(const char *src, const char *dst) {
     }
     if (!opt_dry_run) {
         if (symlink(target, dst) == -1) {
-            perror("symlink");
+            fprintf(stderr, "Error creating symlink %s: %s\n", dst, strerror(errno));
         }
     }
 }
@@ -58,20 +58,25 @@ void copy_symlink(const char *src, const char *dst) {
 void copy_permissions(const char *src, const char *dst) {
     struct stat st;
     if (stat(src, &st) == -1) {
-        perror("stat (permissions)");
+        fprintf(stderr, "Error stat (permissions) for %s: %s\n", src, strerror(errno));
         return;
     }
     if (!opt_dry_run) {
         if (chmod(dst, st.st_mode) == -1) {
-            perror("chmod");
+            fprintf(stderr, "Error chmod for %s: %s\n", dst, strerror(errno));
         }
     }
 }
 
 void copy_directory(const char *src, const char *dst) {
+    if (access(src, R_OK | X_OK) == -1) {
+        fprintf(stderr, "Error: missing read/execute permissions for directory %s: %s\n", src, strerror(errno));
+        return;
+    }
+
     DIR *dir = opendir(src);
     if (!dir) {
-        perror("opendir");
+        fprintf(stderr, "Error opening directory %s: %s\n", src, strerror(errno));
         return;
     }
 
@@ -79,8 +84,8 @@ void copy_directory(const char *src, const char *dst) {
         printf("[MKDIR] %s\n", dst);
     }
     if (!opt_dry_run) {
-        if (mkdir(dst, 0755) == -1) {
-            perror("mkdir");
+        if (mkdir(dst, 0755) == -1 && errno != EEXIST) {
+            fprintf(stderr, "Error creating directory %s: %s\n", dst, strerror(errno));
             closedir(dir);
             return;
         }
@@ -96,11 +101,14 @@ void copy_directory(const char *src, const char *dst) {
 
         struct stat st;
         if (lstat(src_path, &st) == -1) {
-            perror("lstat");
+            fprintf(stderr, "Error lstat for %s: %s\n", src_path, strerror(errno));
             continue;
         }
 
         if (S_ISREG(st.st_mode)) {
+            if (access(src_path, R_OK) == -1) {
+                fprintf(stderr, "Warning: missing read permissions for file %s\n", src_path);
+            }
             create_hard_link(src_path, dst_path);
         } else if (S_ISLNK(st.st_mode)) {
             copy_symlink(src_path, dst_path);
@@ -145,12 +153,17 @@ int main(int argc, char *argv[]) {
     struct stat src_stat, dst_stat;
 
     if (stat(src_dir, &src_stat) == -1 || !S_ISDIR(src_stat.st_mode)) {
-        perror("src dir");
+        fprintf(stderr, "Error accessing source directory %s: %s\n", src_dir, strerror(errno));
+        return 1;
+    }
+
+    if (access(src_dir, R_OK | X_OK) == -1) {
+        fprintf(stderr, "Error: source directory %s lacks read/execute permissions\n", src_dir);
         return 1;
     }
 
     if (!opt_dry_run && stat(dst_dir, &dst_stat) != -1) {
-        perror("backup dir");
+        fprintf(stderr, "Error: backup directory %s already exists\n", dst_dir);
         return 1;
     }
 
