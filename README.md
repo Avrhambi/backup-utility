@@ -1,111 +1,159 @@
 # Backup Utility
 
-A POSIX-compliant, high-performance backup tool written in C.
+A POSIX backup tool in C that snapshots a directory tree using **hard links for
+regular files**, so unchanged data costs zero additional disk space while
+permissions, symlinks, and the directory hierarchy are preserved exactly.
 
-## Elevator Pitch
+---
 
-**Zero-Storage Backups via Hard Links**
-Why duplicate data when you don't have to? This backup utility intelligently creates backups by utilizing hard links for regular files instead of duplicating their content. This means your backups take up *zero* extra disk space for unmodified files, while fully preserving file integrity, metadata, and the directory hierarchy. 
+## 1. System Architecture & Flow
 
-## The "Why"
+The program is split into an I/O-free CLI layer and a recursive traversal engine
+that carries all mutable state in a single `BackupContext` struct (no globals).
 
-This tool was built to solve several common problems with naive backups:
-1. **Storage Bloat:** Standard `cp -r` backups quickly consume all available disk space by copying the identical file contents multiple times. Hard links completely eliminate this waste.
-2. **Broken Symlinks:** Instead of blindly copying what a symlink points to (or breaking the link), this tool replicates the exact symlink itself, ensuring that references remain intact.
-3. **Lost Permissions:** File permissions and modes are automatically copied over, ensuring that executable files remain executable and private files remain private in the backup.
-
-## System Architecture & Flow
-
-The core logic relies on a recursive directory traversal loop, checking file types via `lstat`, and applying the appropriate POSIX syscalls to replicate the structure without duplicating data.
-
-```mermaid
-flowchart TD
-    Start(["Start Backup"]) --> ReadDir["Read Directory Entry"]
-    ReadDir --> Lstat{"File Type?"}
-    
-    Lstat -- Directory --> Mkdir["Create Dest Dir & Copy Perms"]
-    Mkdir --> Recurse["Recursive Call"]
-    Recurse --> ReadDir
-    
-    Lstat -- Regular File --> Link["Create Hard Link (link)"]
-    Link --> ReadDir
-    
-    Lstat -- Symlink --> Readlink["Read Symlink Target"]
-    Readlink --> Symlink["Create New Symlink (symlink)"]
-    Symlink --> ReadDir
-    
-    Lstat -- Other --> Skip["Skip / Log Ignore"]
-    Skip --> ReadDir
-    
-    ReadDir -- EOF --> End(["End Backup"])
+```
+argv ──▶ parse_arguments (getopt_long)      main.c
+             │  populates BackupContext {verbose, dry_run, counters}
+             ▼
+        validate_directories                main.c
+             │  src is a dir + R_OK|X_OK; dst must NOT already exist
+             ▼
+        backup_directory(src, dst) ◀───────┐  backup.c  (recursive)
+             │  opendir + mkdir(dst,0755)  │
+             ▼                             │
+        for each dirent (skip . ..):       │
+          lstat(entry)                     │
+             ├─ S_ISREG  ─▶ link()  ───────┼─▶ files_linked++, space_saved += size
+             ├─ S_ISLNK  ─▶ readlink + symlink()
+             ├─ S_ISDIR  ─▶ backup_directory(...)  ── recurse ──┘
+             └─ other     ─▶ ignored
+          chmod(dst) to mirror source mode (except symlinks)
+             ▼
+        write_summary                       main.c
+             dst/backup.log  (or stdout on --dry-run)
 ```
 
-### End-to-End Walkthrough
+### End-to-end walkthrough
 
-1. **CLI Parsing**: The user invokes `./backup -v /src /dst`. `getopt` parses flags.
-2. **Validation**: The tool checks if `/src` exists and if the user has read/execute permissions.
-3. **Directory Creation**: `/dst` is created (if missing) and permissions are cloned from `/src`.
-4. **Traversal**: `opendir` reads the contents of `/src` recursively.
-5. **Hard Linking**: For every regular file found, `link(src_file, dst_file)` is called, creating a zero-storage pointer to the original inode.
-6. **Logging**: If `-v` is active, the operation is printed. Upon completion, a summary is appended to `backup.log`.
+1. **CLI parse** — `./backup -v /src /dst`. `getopt_long` sets `verbose` /
+   `dry_run` on the context; exactly two positional args are required.
+2. **Validation** — `/src` must exist, be a directory, and be readable +
+   searchable (`R_OK | X_OK`). `/dst` must **not** already exist (outside
+   dry-run), preventing accidental merges into a populated tree.
+3. **Directory creation** — `mkdir(dst, 0755)`, tolerating `EEXIST`.
+4. **Traversal** — `opendir`/`readdir` walk `/src`; each entry is classified with
+   `lstat` (not `stat`, so symlinks are seen as symlinks).
+5. **Replication** — regular files become hard links (`link`), symlinks are
+   recreated from their `readlink` target, subdirectories recurse.
+6. **Metadata** — `chmod` copies the source mode onto every non-symlink entry.
+7. **Summary** — `files_linked` and `space_saved` are written to
+   `dst/backup.log`, or printed to stdout under `--dry-run`.
 
-## Tech Stack & Engineering Decisions
+---
 
-| Layer | Technology | Rationale & Trade-offs |
+## 2. Tech Stack & Engineering Decisions
+
+| Layer | Choice | Rationale & trade-offs |
 | :--- | :--- | :--- |
-| **Language** | C (C99) | Chosen for direct, low-level access to POSIX system calls (`lstat`, `link`). Trade-off: Requires manual memory management and bounds checking (e.g., preventing `snprintf` overflows). |
-| **Architecture** | Modular Clean Code | Divided into `main.c` (CLI/parsing) and `backup.c/h` (core logic) with a context struct (`BackupContext`). Rationale: Removes global variables, isolates responsibilities, and makes the code highly testable and readable. |
-| **File I/O** | POSIX Syscalls | `opendir`/`readdir`/`link` provide raw performance over standard library wrappers. Trade-off: Code is not portable to non-POSIX systems like native Windows. |
-| **Storage Strategy**| Hard Links | Saves 100% of disk space for unmodified files. Trade-off: Hard links cannot span across different disk partitions or filesystems; modifying the backup file modifies the source. |
+| Language | C (C99, `-Wall -Wextra`) | Direct access to `link`, `lstat`, `readlink`. Cost: manual memory management and explicit `snprintf` truncation checks on every path join. |
+| Structure | `main.c` (CLI) + `backup.c/.h` (engine) | CLI parsing and traversal are separately testable; the engine has no `printf` policy baked in beyond an opt-in verbose logger. |
+| State | `BackupContext` struct threaded through calls | No global mutable state; recursion stays reentrant and the counters have one owner. |
+| Copy strategy | Hard links for regular files | 0 bytes for unchanged files, instant vs. byte copy. Trade-offs: cannot cross filesystems/partitions (`EXDEV`), and editing a backed-up file mutates the original inode — this is a snapshot of *structure*, not an isolated copy. |
+| Symlinks | `readlink` + `symlink` (never dereferenced) | Broken or relative links are reproduced verbatim rather than followed or flattened. |
+| Arg parsing | `getopt_long` | Short and GNU long options for free; GNU-specific, matching the POSIX target. |
 
-## How to Use
+**Not applicable to this project:** database/indexing section — there is no
+datastore; the only persisted artifact is a plaintext `backup.log`.
 
-Compile the program using the provided `Makefile`:
+---
+
+## 3. Resilience & Error Handling Patterns
+
+- **Non-existent destination guard** — `validate_directories` refuses a `/dst`
+  that already exists, so a backup can never silently interleave with unrelated
+  files. (`main.c:68`)
+- **Fail-soft per entry** — a failed `link`, `readlink`, `symlink`, `chmod`, or
+  `lstat` prints to `stderr` and continues to the next entry; one unreadable file
+  does not abort the run. (`backup.c:40`, `backup.c:54`, `backup.c:145`)
+- **Fail-hard per directory** — an unreadable directory or failed `mkdir` returns
+  `-1` and unwinds, because nothing useful can be written beneath it.
+  (`backup.c:101`, `backup.c:115`)
+- **Path-length safety** — every `src/name` join checks the `snprintf` return
+  against `PATH_MAX` and skips the entry on truncation rather than acting on a
+  clipped path. (`backup.c:139`)
+- **`lstat` over `stat`** — symlinks are classified without being followed,
+  avoiding infinite recursion through self-referential links.
+- **Dry-run** — `--dry-run` walks and counts through the identical code path with
+  every mutating syscall gated behind `ctx->dry_run`, so the preview matches the
+  real run.
+- **Allocation checks** — the per-directory path buffers are heap-allocated and
+  null-checked, freeing the partner buffer and closing the `DIR*` on failure.
+
+---
+
+## 4. Project Layout
+
+```
+Backup_Utility/
+├── main.c        CLI: getopt_long parsing, directory validation, log summary
+├── backup.c      Engine: recursive traversal, hard-link / symlink / chmod replication
+├── backup.h      BackupContext struct + public engine API
+├── Makefile      gcc -Wall -Wextra -g; objects -> backup
+└── .gitignore    build artifacts (backup, *.o)
+```
+
+Flat by design — two translation units, one shared header. The boundary that
+matters (CLI vs. filesystem engine) is the file split.
+
+---
+
+## 5. Local Setup & Quickstart
 
 ```bash
-make
+git clone https://github.com/Avrhambi/Backup_Utility.git
+cd Backup_Utility
+make                      # produces ./backup
+
+# smoke test on a throwaway tree
+mkdir -p /tmp/src/sub && echo hi > /tmp/src/a.txt && ln -s a.txt /tmp/src/link
+./backup --dry-run -v /tmp/src /tmp/dst   # preview, writes nothing
+./backup -v /tmp/src /tmp/dst             # real run
+cat /tmp/dst/backup.log
+ls -li /tmp/src/a.txt /tmp/dst/a.txt      # identical inode number = hard link
+
+make clean
 ```
 
 ### Usage
 
-```bash
+```
 ./backup [OPTIONS] <source_dir> <backup_dir>
+  -h, --help      print usage
+  -v, --verbose   print each LINK / SYMLINK / MKDIR action
+  -d, --dry-run   simulate; count files and bytes, write nothing
 ```
 
-### Options
-* `-h, --help`: Prints usage instructions.
-* `-v, --verbose`: Prints exactly what the tool is doing in real-time (e.g., `[LINK] /src/file -> /dest/file`).
-* `-d, --dry-run`: Simulates the backup without actually writing files or directories. Useful for seeing what *would* happen.
+---
 
-### Examples
+## 6. Testing & CI/CD
 
-**Standard Backup:**
-```bash
-./backup /home/user/docs /mnt/backups/docs_backup
-```
+> **Gap — no automated tests or CI yet.** The build is `make` with
+> `-Wall -Wextra` (no warnings) and manual dry-run verification against the tree
+> above. There is no unit-test target and no `.github/workflows/`.
+>
+> Planned: a shell-based fixture test (build a known tree, run the tool, assert
+> inode equality for files, target equality for symlinks, mode equality via
+> `stat -c %a`, and the `backup.log` counts) wired into a GitHub Actions job that
+> runs `make` + the fixture script on every push.
 
-**Dry-Run (Test before committing):**
-```bash
-./backup --dry-run /home/user/docs /mnt/backups/docs_backup
-```
-*Observe exactly how many files will be backed up and how much space will be saved, without writing anything to disk.*
+---
 
-**Verbose Mode:**
-```bash
-./backup -v /home/user/docs /mnt/backups/docs_backup
-```
-*See every file, directory, and symlink as it is processed in real-time.*
+## 7. Performance
 
-## 3. Performance Benchmarks
-
-While this tool is designed to be a high-performance utility that utilizes hard links to save time and I/O overhead, we currently lack concrete benchmarking evidence against other tools (like `rsync` or `cp`). 
-
-<!-- TODO: run EXPLAIN ANALYZE, paste real output -->
-> **Gap Identified**: Performance claims currently lack empirical benchmark evidence.
-
-## 4. Reliability & CI
-
-The code contains robust error handling, but we do not yet have automated pipelines.
-
-<!-- TODO: set up CI pipeline (e.g., GitHub Actions) and insert build badges here -->
-> **Gap Identified**: Claims of reliability lack automated Continuous Integration (CI) and unit test evidence.
+> **Gap — no benchmark evidence.** The hard-link strategy is O(number of entries)
+> syscalls with no byte copying, so it is expected to dominate `cp -r` on large
+> unchanged trees, but this has not been measured against `cp` or `rsync`.
+>
+> To produce real figures: generate a fixed corpus (e.g. `N` files totalling
+> `X` GiB), then `time ./backup ...` vs. `time cp -r ...` vs. `time rsync -a ...`
+> on the same corpus and record wall time + `du -sh` of each destination.
