@@ -3,6 +3,7 @@
 A POSIX backup tool in C that snapshots a directory tree using **hard links for
 regular files**, so unchanged data costs zero additional disk space while
 permissions, symlinks, and the directory hierarchy are preserved exactly.
+Originally a OS assignment, part of CS degree at Bar Ilan university.
 
 ---
 
